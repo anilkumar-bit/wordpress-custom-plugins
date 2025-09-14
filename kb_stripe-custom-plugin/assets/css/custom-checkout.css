@@ -1,0 +1,75 @@
+.page-id-8 button.stripe-gateway-stripelink-modal-trigger {
+    display: none !important;
+}
+.page-id-8 .woocommerce-billing-fields h3 {
+    border: 0 !important;
+    border-radius: 0!important;
+    font-size: 1.25em!important;
+    margin: 0!important;
+    padding: 0!important;
+    vertical-align: baseline!important;
+    word-break: break-word!important;
+}
+ .page-id-8 h3 {
+    border: 0 !important;
+    border-radius: 0!important;
+    font-size: 1.25em!important;
+    margin: 0!important;
+    padding: 0!important;
+    vertical-align: baseline!important;
+    word-break: break-word!important;
+}
+
+
+
+.page-id-8 form.checkout.woocommerce-checkout 
+{display: flex;
+justify-content: center!important;
+align-items: start!important;
+gap: 24px!important;
+flex-wrap: wrap!important;}
+
+.page-id-8 #customer_details {
+    width: calc(70% - 12px)!important;
+}
+
+.page-id-8 #order_review {
+    width: calc(30% - 12px)!important;
+    padding: 20px!important;
+    border: 1px solid #ccc!important;
+    border-radius: 16px!important;
+    /* height: 100%!important;
+    position: sticky!important;
+    top: 0!important; */
+}
+
+.page-id-8 #order_review h3#order_review_heading {
+    margin: 0 0 12px!important;
+}
+.page-id-8 label {
+    color: hsla(0, 0%, 7%, .7);
+    font-size: 15px!important;
+    font-style: inherit!important;
+    font-weight: 500!important;
+    left: .5em!important;
+    letter-spacing: inherit!important;
+    line-height: inherit!important;
+    line-height: 1.25!important;
+    margin: 0!important;
+    max-width: calc(100% - 32px)!important;  
+}
+.page-id-8 .woocommerce-privacy-policy-text p {
+    font-size:15px !important;
+}
+.page-id-8 div#card-element {
+    background-color: #e1e1e1 !important;
+}
+.woocommerce-checkout table.shop_table tr.cart-subtotal th, .woocommerce-checkout table.shop_table tr.order-total th {
+    
+    text-align: -webkit-left !important;
+}
+.page-id-8 #order_review table tfoot tr th {
+    /* background: red; */
+    text-align: left !important;
+}
+

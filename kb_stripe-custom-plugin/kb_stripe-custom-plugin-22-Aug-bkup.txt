@@ -1,0 +1,747 @@
+<?php
+/*
+Plugin Name: Custom Stripe Integration Subscription v3  
+Description: Custom integration of Stripe with WooCommerce
+Version: 111.0
+Author: Kbiz
+*/
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit; // Exit if accessed directly
+}
+
+// Main Plugin Class
+class Custom_Stripe_Integration {
+    
+    public function __construct() {
+        add_action("plugins_loaded", [$this, "init"]);
+        register_activation_hook(__FILE__, [$this, "activate"]);
+        add_action("admin_menu", [$this, "add_admin_pages"]);
+        add_action("wp_enqueue_scripts", [$this, "enqueue_scripts"]);
+        add_shortcode("transfer", [$this, "transfer_shortcode"]);
+        add_shortcode("custom_template", [$this, "custom_shortcode"]);
+		add_action('template_redirect', [$this, 'redirect_to_custom_checkout']);
+		add_filter('the_content', [$this, 'replace_woocommerce_checkout_page']); 
+		add_action('woocommerce_review_order_after_submit', [$this, 'kbnew_add_custom_button']); 
+		
+		add_action('wp_ajax_confirm_payment_intent', [$this, 'confirm_payment_intent']); 
+        add_action('wp_ajax_nopriv_confirm_payment_intent', [$this, 'confirm_payment_intent']); 
+        add_action('wp_ajax_create_payment_intentnew', [$this, 'create_payment_intentnew']); 
+        add_action('wp_ajax_nopriv_create_payment_intentnew', [$this, 'create_payment_intentnew']); 
+		
+    }
+    
+    public function activate() {
+        $this->add_menu_item();
+        $this->create_tables();             
+    }
+
+    public function init() {
+        if ( !class_exists("Stripe\Stripe") ) {
+            require_once plugin_dir_path(__FILE__) . "vendor/stripe/stripe-php/init.php";
+        }
+
+        add_filter("woocommerce_payment_gateways", [$this, "add_custom_stripe_gateway"]);
+
+        if (class_exists('WC_Payment_Gateway')) {
+            require_once plugin_dir_path(__FILE__) . 'includes/class-custom-stripe-gateway.php';
+        }
+		 require_once plugin_dir_path( __FILE__ ).'includes/class-wc-product-recuring.php';
+    }
+
+    public function add_admin_pages() {
+        add_submenu_page(
+            "woocommerce",
+            __("Custom Gateway Settings", "custom-stripe"),
+            __("Custom Gateway Settings", "custom-stripe"),
+            "manage_options",
+            "custom_gateway_settings",
+            [$this, "render_settings_page"]
+        );
+
+        add_submenu_page(
+            "woocommerce",
+            __("Transfer Status", "custom-stripe"),
+            __("Transfer Status", "custom-stripe"),
+            "manage_options",
+            "custom_gateway_transfer_status",
+            [$this, "render_transfer_status_page"]
+        );
+
+        add_submenu_page(
+            "woocommerce",
+            __("Vendor Dashboard", "custom-stripe"),
+            __("Vendor Dashboard", "custom-stripe"),
+            "manage_options",
+            "vendor_dashboard",
+            [$this, "render_vendor_dashboard_page"]
+        );
+    }
+
+    public function add_menu_item() {
+        if (!current_user_can("activate_plugins")) {
+            return;
+        }
+
+        global $wp_admin_bar;
+		
+        $wp_admin_bar->add_menu([
+            "id" => "custom_gateway_menu",
+            "title" => __("Custom Gateway", "custom-stripe"),
+            "href" => admin_url("admin.php?page=custom_gateway_settings"),
+            "meta" => [
+                "class" => "custom-gateway-menu-item",
+                "target" => "_self",
+            ],
+        ]);
+        $wp_admin_bar->add_menu([
+            "id" => "vendor_dashboard_menu",
+            "title" => __("Vendor Dashboard", "custom-stripe"),
+            "href" => admin_url("admin.php?page=vendor_dashboard"),
+            "meta" => [
+                "class" => "vendor-dashboard-menu-item",
+                "target" => "_self",
+            ],
+        ]);
+    }
+
+    public function create_tables() {
+        global $wpdb;
+        $charset_collate = $wpdb->get_charset_collate();
+        $table_name1 = $wpdb->prefix . "custom_stripe_data1";
+        $table_name2 = $wpdb->prefix . "Commission_data";
+        $table_name3 = $wpdb->prefix . "transferlog_table";
+        $table_name4 = $wpdb->prefix . "custom_subscription_data";
+
+        $sql1 = "CREATE TABLE $table_name1 (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            enabled tinyint(1) DEFAULT 0 NOT NULL,
+            title varchar(100) DEFAULT '' NOT NULL,
+            description text NOT NULL,
+            api_key varchar(255) DEFAULT '' NOT NULL,
+            pub_api_key varchar(255) DEFAULT '' NOT NULL,
+            PRIMARY KEY  (id)
+        ) $charset_collate;";
+
+        $sql2 = "CREATE TABLE $table_name2 (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            connected_account_id varchar(255) DEFAULT '' NOT NULL,
+            amount decimal(10,2) DEFAULT 0 NOT NULL,
+            order_id bigint(20) NOT NULL,
+            PRIMARY KEY  (id)
+        ) $charset_collate;";
+
+        $sql3 = "CREATE TABLE $table_name3 (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            connected_account_id varchar(255) DEFAULT '' NOT NULL,
+            amount decimal(10,2) DEFAULT 0 NOT NULL,
+            order_id bigint(20) NOT NULL,
+            error_message text,
+            status varchar(50),
+            PRIMARY KEY  (id)
+        ) $charset_collate;";
+		
+		$sql4 = "CREATE TABLE $table_name4 (
+        id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+        user_email VARCHAR(255) NOT NULL,
+        subscription_id VARCHAR(255) NOT NULL,
+        product_id VARCHAR(255) NOT NULL,
+        stripe_price_id VARCHAR(255) NOT NULL,
+		customer VARCHAR(255) NOT NULL,
+		url VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY user_email (user_email)
+		) $charset_collate;";
+
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql1);
+        dbDelta($sql2);
+        dbDelta($sql3);
+        dbDelta($sql4);
+    }
+
+    public function enqueue_scripts() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . "custom_stripe_data1";
+        $pub_key = $wpdb->get_var("SELECT pub_api_key FROM $table_name ORDER BY id DESC LIMIT 1");
+
+        wp_enqueue_script(
+            "custom-stripe-checkout",
+            plugin_dir_url(__FILE__) . "assets/js/custom-checkout.js",
+            ["jquery", "wc-checkout"],
+            null,
+            true
+        );
+        wp_enqueue_style(
+            "custom-stripe-checkout",
+            plugin_dir_url(__FILE__) . "assets/css/custom-checkout.css"
+        );
+
+        wp_localize_script("custom-stripe-checkout", "custom_stripe_vars", [
+            "stripe_pk_key" => $pub_key,
+            'ajax_url' => admin_url('admin-ajax.php'),
+            "stripe_token_name" => "stripeToken",
+        ]);
+    }
+
+    public function render_settings_page() {
+		include(plugin_dir_path(__FILE__) . 'templates/render_custom_setting.php');
+    }
+
+    public function render_transfer_status_page() {
+        include(plugin_dir_path(__FILE__) . 'templates/transfer-status.php');
+    }
+
+    public function render_vendor_dashboard_page() {
+        include(plugin_dir_path(__FILE__) . 'templates/vendor-dashboard.php');
+    }
+
+    public function transfer_shortcode($atts) {
+        ob_start();
+		 echo "transfer-form 256";
+        //include(plugin_dir_path(__FILE__) . 'templates/transfer-form.php');
+        return ob_get_clean();
+    }
+
+    public function custom_shortcode($atts) {
+        ob_start();
+		 echo "Custom Account";
+        //include(plugin_dir_path(__FILE__) . 'templates/custom-template.php');
+        return ob_get_clean();
+    }
+
+    public function add_custom_stripe_gateway($gateways) {
+        $gateways[] = 'WC_Custom_Stripe_Gateway';
+        return $gateways;
+    }
+	// Redirect to custom checkout page
+    public function redirect_to_custom_checkout() {
+        if (is_checkout() && !empty(is_wc_endpoint_url('order-received'))) {
+            return;
+        }
+
+        if (is_checkout() && isset($_GET['custom_checkout'])) {
+            include plugin_dir_path(__FILE__) . 'templates/form-checkout.php'; 
+            exit;
+        }
+    }
+	// Replace WooCommerce checkout page content
+    public function replace_woocommerce_checkout_page($content) {
+        if (is_page('checkout')) {
+            // Check the chosen payment method
+            if (WC()->session->get('chosen_payment_method') == 'custom') {
+                // Replace content with custom checkout shortcode
+                $content = do_shortcode('[custom_checkout_shortcode]');
+            } else {
+                // Default WooCommerce checkout
+                $content = do_shortcode('[woocommerce_checkout]');
+            }
+        }
+        return $content;
+    }
+	public function kbnew_add_custom_button() {
+		?>
+		<div class="custom-checkout-button-wrapper">
+			<button type="button" id="preventdefaultbutton" class="button alt wp-element-button">Pay and place Order </button>
+		</div>
+		<?php
+	} 
+	 // Confirm Payment Intent
+    public function confirm_payment_intent() {
+        if (!isset($_POST["paymentIntentId"]) || empty($_POST["paymentIntentId"])) {
+            echo json_encode(['error' => 'paymentIntentId not provided']);
+            exit;
+        }
+        if (!isset($_POST["paymentMethodId"]) || empty($_POST["paymentMethodId"])) {
+            echo json_encode(['error' => 'paymentMethodId not provided']);
+            exit;
+        }
+        if (!isset($_POST["order_id"]) || empty($_POST["order_id"])) {
+            echo json_encode(['error' => 'Order ID not provided']);
+            exit;
+        }
+
+        global $wpdb;
+        $paymentIntentId = sanitize_text_field($_POST['paymentIntentId']);
+        $paymentMethodId = sanitize_text_field($_POST['paymentMethodId']);
+        $paymentStatus = sanitize_text_field($_POST['paymentStatus']);
+        $order_id = intval($_POST["order_id"]);
+        $order = wc_get_order($order_id);
+        $amount = round($order->get_total() * 100);
+        $connected_account_id = esc_attr(get_option("kb_conncted_account_id_stripe"));
+
+        // Get the payment gateway instance
+        $gateway_id = 'custom_stripe'; // Replace with your gateway ID
+        $gateway = WC()->payment_gateways->payment_gateways()[$gateway_id];
+        if (!$gateway) {
+            return;
+        }
+        $order_return_url = $gateway->get_return_url($order);
+
+        $custom_order_table = $wpdb->prefix . "custom_order_table";
+        $commission_table = $wpdb->prefix . "Commission_data";
+        $transferlog_table = $wpdb->prefix . "transferlog_table";
+
+        $order_exists = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $custom_order_table WHERE order_id = %d", $order_id));
+
+        if ($paymentStatus == 'succeeded') {
+            $wpdb->insert(
+                $custom_order_table,
+                [
+                    "order_id" => $order_id,
+                    "amount" => $amount,
+                ],
+                ["%d", "%d"]
+            );
+
+            $wpdb->insert($commission_table, [
+                "connected_account_id" => $connected_account_id,
+                "amount" => $percentageAmountInPence,
+                "order_id" => $order_id,
+            ], ["%s", "%f", "%d"]);
+
+            $order->payment_complete();
+            $order->add_order_note(__("Payment successfully processed by Custom Stripe.", "woocommerce"));
+            WC()->cart->empty_cart();
+
+            echo json_encode(['clientSecret' => $paymentIntent->client_secret, 'paymentIntent' => $paymentIntent, 'orderReturn' => $order_return_url, 'order_id' => $order_id]);
+            exit;
+        } else {
+            $order->add_order_note(__("Payment Not Confirmed.", "woocommerce"));
+
+            $wpdb->insert($transferlog_table, [
+                "error_message" => $paymentStatus,
+                "error_code" => '',
+                "order_id" => $order_id,
+                "connected_account_id" => $connected_account_id,
+                "amount" => $percentageAmountInPence,
+                "currency" => strtolower(get_woocommerce_currency()),
+                "status" => $paymentStatus,
+                "charge_id" => '121111',
+                "timestamp" => current_time('mysql'),
+            ], ["%s", "%d", "%d", "%s", "%f", "%s", "%s", "%s"]);
+
+            echo json_encode(['error' => 'Payment Not Confirmed']);
+        }
+    }
+
+	private function checkRecurring(){
+		
+		if (WC()->cart->is_empty()) {
+            return new WP_Error('empty_cart', __('Your cart is empty.', 'woocommerce'));
+        }
+        
+		$isRecuring = false;
+        foreach (WC()->cart->get_cart() as $cart_item_key => $cart_item) {
+            $product_id = $cart_item['product_id'];
+			
+			$recurring = get_post_meta($product_id, '_recurring', true);
+			//$stripe_product_id = get_post_meta($product_id, '_stripe_product_id', true);
+			//$stripe_price_id = get_post_meta($product_id, '_stripe_price_id', true);
+			if($recurring === 'yes'){
+				$isRecuring  = true;
+				//echo json_encode(['recurringType' => 'yes ']);
+				break;
+			}
+        }
+		
+		return $isRecuring;
+	}
+	/*
+	@ create Subscription from  recuring Orders.
+	@ Split payment based on  commission 
+	
+	*/
+	/* private function create_subscription(){
+		
+	} */
+
+
+    // Create Payment Intent
+    public function create_payment_intentnew() {
+        if (!isset($_POST["stripeToken"]) && empty($_POST["stripeToken"])) {
+            $token = sanitize_text_field($_POST["payment_method"]);
+            echo json_encode(['error' => 'Payment method not provided']);
+           exit;
+        }
+		
+		$paymentToken = sanitize_text_field($_POST["stripeToken"]);
+		if ($this->checkRecurring()) {
+			$pid = '';
+			foreach (WC()->cart->get_cart() as $cart_item_key => $cart_item) {
+				$product_id = $cart_item['product_id'];
+				$pid = $product_id; 
+				//echo json_encode(['product_id' => $pid]);
+				//exit;
+				//break;    
+			}
+
+			if($pid){
+				// Retrieve Stripe price ID and user details
+				$stripe_price_id = get_post_meta($pid, '_stripe_price_id', true);
+				//echo json_encode(['stripe_price_id' => $stripe_price_id]);
+				//echo json_encode(['token' => $paymentToken]);
+				//exit; 
+				
+				$current_user = wp_get_current_user();
+				$user_email = $current_user->user_email;
+				$user_name = !empty($current_user->display_name) ? $current_user->display_name : '';
+
+			// Combine the data into a single array
+			$user_data = [
+				'email' => $user_email,
+				'name'  => $user_name
+			];
+
+			// Output the JSON-encoded array
+			//echo json_encode($user_data);
+				//exit; 
+				
+				 if (empty($user_name)) {
+					$user_name = explode('@', $user_email)[0]; // Fallback to email username
+				}
+
+				// Create a subscription
+				$response = $this->create_subscription($pid, $stripe_price_id, $user_name, $user_email , $paymentToken);
+				
+				if($response['success']) {
+					$order = $this->create_order_from_cart();
+					if (is_wp_error($order)) {
+						echo json_encode(['error' => $order->get_error_message()]);
+						exit;
+					}
+
+					global $wpdb;
+					$order_id = $order->get_id();
+					$amount = round($order->get_total() * 100);
+					$table_name = $wpdb->prefix . "custom_stripe_data1";
+					$api_key = $wpdb->get_var("SELECT api_key FROM $table_name ORDER BY id DESC LIMIT 1");
+					$connected_account_id = esc_attr(get_option("kb_conncted_account_id_stripe"));
+
+					\Stripe\Stripe::setApiKey($api_key);
+
+					$custom_order_table = $wpdb->prefix . "custom_order_table";
+					$order_exists = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $custom_order_table WHERE order_id = %d", $order_id));
+
+					// Get the payment gateway instance
+					$gateway_id = 'custom_stripe'; // Replace with your gateway ID
+					$gateway = WC()->payment_gateways->payment_gateways()[$gateway_id];
+					if (!$gateway){
+						return;
+					}
+					$order_return_url = $gateway->get_return_url($order);
+					if ($order_exists) {
+						error_log("Order ID $order_id already exists in the custom table. Charge not created.");
+						echo json_encode([
+							"error" => "Order ID $order_id already exists in the custom table. Charge not created.",
+							"redirect" => wc_get_checkout_url(),
+						]);
+					} else {
+						$commission_table = $wpdb->prefix . "Commission_data";
+						$transferlog_table = $wpdb->prefix . "transferlog_table";
+						$transfer_exists = $wpdb->get_var($wpdb->prepare(
+							"SELECT COUNT(*) FROM $commission_table WHERE order_id = %d",
+							$order_id
+						));
+						$site_title = get_bloginfo('name');
+						
+						$Orderamount = round($order->get_total() * 100);
+						$percentageFee = 0.025; // 2.5% as a decimal
+						$fixedFee = 20; // 20 pence
+						$stripe_fee = round(($percentageFee * $Orderamount) + $fixedFee, 0);
+						$amount = $Orderamount - $stripe_fee;
+						$percent = get_option("kb_conncted_account_commission"); // e.g., 20 for 20%
+						$percentage = (100 - $percent) / 100;
+						$percentageAmountInPence = round($amount * $percentage, 0);
+						//$link = $response['subscription']->['items']->['url'];
+						if (!$transfer_exists) {
+							$order->payment_complete();
+							$order->add_order_note(__("Payment successfully processed by Custom Stripe subscription", "woocommerce"));
+							WC()->cart->empty_cart();
+							echo json_encode(['recurringType' => 'yes',  'orderReturn' => $order_return_url, 'order_id' => $order_id]);
+							exit;
+							
+						} //if transfer not exist closed
+					} //order exist closed
+				} else {
+					
+				}
+                /* echo "<pre>";
+				print_r($response);
+                echo "</pre>"; */
+				
+				
+				/* if ($response['success']) {
+					// Handle successful subscription
+					//$subscription = $response['subscription'];
+					//echo "Subscription created successfully! Subscription ID: " . $subscription->id;
+					//$Confirm_subscription_Payments = $this->confirm_subscription_payments();
+					//$this->confirm_payment_intent();
+				} else {
+					// Handle failure
+					echo "Error creating subscription: " . $response['error'];
+				}  */ 
+				//exit;
+			}
+		}else{
+			
+			$order = $this->create_order_from_cart();
+			if (is_wp_error($order)) {
+				echo json_encode(['error' => $order->get_error_message()]);
+				exit;
+			}
+
+			global $wpdb;
+			$order_id = $order->get_id();
+			$amount = round($order->get_total() * 100);
+			$table_name = $wpdb->prefix . "custom_stripe_data1";
+			$api_key = $wpdb->get_var("SELECT api_key FROM $table_name ORDER BY id DESC LIMIT 1");
+			$connected_account_id = esc_attr(get_option("kb_conncted_account_id_stripe"));
+
+			\Stripe\Stripe::setApiKey($api_key);
+
+			$custom_order_table = $wpdb->prefix . "custom_order_table";
+			$order_exists = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $custom_order_table WHERE order_id = %d", $order_id));
+
+			// Get the payment gateway instance
+			$gateway_id = 'custom_stripe'; // Replace with your gateway ID
+			$gateway = WC()->payment_gateways->payment_gateways()[$gateway_id];
+			if (!$gateway){
+				return;
+			}
+			$order_return_url = $gateway->get_return_url($order);
+
+			if ($order_exists) {
+				error_log("Order ID $order_id already exists in the custom table. Charge not created.");
+				echo json_encode([
+					"error" => "Order ID $order_id already exists in the custom table. Charge not created.",
+					"redirect" => wc_get_checkout_url(),
+				]);
+			} else {
+				$commission_table = $wpdb->prefix . "Commission_data";
+				$transferlog_table = $wpdb->prefix . "transferlog_table";
+				$transfer_exists = $wpdb->get_var($wpdb->prepare(
+					"SELECT COUNT(*) FROM $commission_table WHERE order_id = %d",
+					$order_id
+				));
+				$site_title = get_bloginfo('name');
+				
+				$Orderamount = round($order->get_total() * 100);
+				$percentageFee = 0.025; // 2.5% as a decimal
+				$fixedFee = 20; // 20 pence
+				$stripe_fee = round(($percentageFee * $Orderamount) + $fixedFee, 0);
+				$amount = $Orderamount - $stripe_fee;
+				$percent = get_option("kb_conncted_account_commission"); // e.g., 20 for 20%
+				$percentage = (100 - $percent) / 100;
+				$percentageAmountInPence = round($amount * $percentage, 0);
+				if (!$transfer_exists) {
+					try {
+						$paymentIntent = \Stripe\PaymentIntent::create([
+							'amount' => $Orderamount, // Amount in cents
+							'currency' => strtolower(get_woocommerce_currency()), // Currency
+							'statement_descriptor' => $site_title,
+							'statement_descriptor_suffix' => $site_title,
+							'automatic_payment_methods' => [
+								'enabled' => true,
+								'allow_redirects' => 'never',
+							],
+							'transfer_data' => [
+								'destination' => $connected_account_id,
+								'amount' => $percentageAmountInPence,
+							],
+						]);
+						
+						echo json_encode(['clientSecret' => $paymentIntent->client_secret, 'paymentIntent' => $paymentIntent, 'orderReturn' => $order_return_url, 'order_id' => $order_id]);
+						exit;
+					} catch (\Stripe\Exception\ApiErrorException $e) {
+						http_response_code(500);
+						echo json_encode(['error' => $e->getMessage()]);
+						exit;
+					}
+				} //if transfer not exist closed
+			} //order exist closed
+		}  // recuring check closed 
+    }
+	
+	function create_subscription($product_id, $stripe_price_id, $user_name, $user_email, $paymentToken) {
+    
+		// Set your Stripe secret key
+	   global $wpdb;
+
+		// Get API key and connected account ID
+		$table_name = $wpdb->prefix . "custom_stripe_data1";
+		$api_key = $wpdb->get_var("SELECT api_key FROM $table_name ORDER BY id DESC LIMIT 1");
+		$connected_account_id = esc_attr(get_option("kb_conncted_account_id_stripe"));
+
+		\Stripe\Stripe::setApiKey($api_key);
+
+		// Prepare response
+		//$response = ['success' => false, 'subscription' => null, 'error' => ''];
+		$response['error'] = '';
+		try {
+			// Create a Payment Method from the payment token
+			$paymentMethod = \Stripe\PaymentMethod::create([
+				'type' => 'card',
+				'card' => [
+					'token' => $paymentToken,
+				],
+			]);
+
+			// Check if a customer with the given email already exists
+			$existing_customers = \Stripe\Customer::all([
+				'email' => $user_email,
+				'limit' => 1 // We only need to find one customer
+			]);
+
+			if (count($existing_customers->data) > 0) {
+				// Customer exists, use the existing customer
+				$customer = $existing_customers->data[0];
+			} else {
+				// Customer does not exist, create a new customer
+				$customer = \Stripe\Customer::create([
+					'payment_method' => $paymentMethod->id,
+					'invoice_settings' => [
+						'default_payment_method' => $paymentMethod->id,
+					],
+					'name' => $user_name,
+					'email' => $user_email,
+				]);
+			}
+
+			// Create the subscription
+			$subscription = \Stripe\Subscription::create([
+				'customer' => $customer->id,
+				'items' => [
+					['price' => $stripe_price_id], // Replace with your actual price ID
+				],
+				'default_payment_method' => $paymentMethod->id, // Attach payment method to subscription
+				'application_fee_percent' => 2.5, // Fee percentage for the main account
+				'transfer_data' => [
+					'destination' => $connected_account_id,
+				],
+			]);
+
+			// Calculate Stripe fee (2.5%)
+		
+			// Store subscription data in the database
+			$subscription_table = $wpdb->prefix . "custom_subscription_data";
+
+			$wpdb->insert(
+				$subscription_table,
+				[
+					'user_email' => $user_email,
+					'subscription_id' => $subscription->id,
+					'product_id' => $product_id,
+					'stripe_price_id' => $stripe_price_id,
+					'customer' => $subscription->customer,
+					'url'=>$subscription->items->url,
+				],
+				[
+					'%s', '%s', '%s', '%s', '%s', '%d'
+				]
+			);
+            
+			// Prepare successful response
+		    $response['success'] = true;
+			$response['subscription'] = $subscription;
+			/*$response['amount'] = $amount;
+			$response['fee_amount'] = $fee_amount; */
+
+		} catch (\Stripe\Exception\ApiErrorException $e) {
+			// Handle Stripe API errors
+			$response['error'] = $e->getMessage();
+		} catch (\Exception $e) {
+			// Handle other exceptions
+			$response['error'] = $e->getMessage();
+		}
+        return $response; 
+		// Return the response
+		//echo json_encode($response);
+		//exit;
+	}
+
+	
+
+    // Create Order from Cart
+    private function create_order_from_cart() {
+        if (WC()->cart->is_empty()) {
+            return new WP_Error('empty_cart', __('Your cart is empty.', 'woocommerce'));
+        }
+
+        $order = wc_create_order();
+        $order->add_order_note(__('Order created via custom Stripe integration.', 'woocommerce'));
+
+        foreach (WC()->cart->get_cart() as $cart_item_key => $cart_item) {
+            $product_id = $cart_item['product_id'];
+            $quantity = $cart_item['quantity'];
+            $order->add_product(get_product($product_id), $quantity);
+        }
+
+		//$recurring = get_post_meta($product_id, '_recurring', true);
+        //$checked = $recurring === 'yes' ? 'checked' : '';
+		//die($checked);
+		 
+        $order->calculate_totals();
+        $order->save();
+
+        return $order;
+    }
+	
+	function create_subscription_with_split( $user_id, $product_id, $connected_account_id ) {
+		$order = wc_create_order();
+		$order->add_product( wc_get_product( $product_id ), 1 );
+		$order->calculate_totals();
+		$order->save();
+
+		// Create subscription
+		$subscription = wcs_create_subscription( array(
+			'order_id' => $order->get_id(),
+			'user_id' => $user_id,
+			'status' => 'active',
+		) );
+
+		// Attach the connected account to the subscription
+		update_post_meta( $subscription->get_id(), '_stripe_connected_account', $connected_account_id );
+
+		return $subscription;
+	}
+	
+	function handle_subscription_payment_split( $subscription_id ) {
+		
+		$subscription = wc_get_order( $subscription_id );
+
+		if ( $subscription && $subscription->get_type() === 'shop_subscription' ) {
+			$connected_account_id = get_post_meta( $subscription_id, '_stripe_connected_account', true );
+
+			// Retrieve the Stripe payment intent
+			$payment_intent_id = get_post_meta( $subscription_id, '_stripe_payment_intent_id', true );
+
+			if ( $connected_account_id && $payment_intent_id ) {
+				$stripe = new \Stripe\StripeClient( 'YOUR_STRIPE_SECRET_KEY' );
+
+				// Split the payment
+				$stripe->paymentIntents->update(
+					$payment_intent_id,
+					['transfer_data' => ['destination' => $connected_account_id]]
+				);
+			}
+		}
+	}
+	//add_action( 'woocommerce_order_status_completed', 'handle_subscription_payment_split' );
+
+	function handle_subscription_renewal( $subscription_id ) {
+		$subscription = wc_get_order( $subscription_id );
+
+		if ( $subscription && $subscription->get_type() === 'shop_subscription' ) {
+			// Similar logic to handle payment split on renewal
+			handle_subscription_payment_split( $subscription_id );
+		}
+	}
+	//add_action( 'woocommerce_subscription_renewal_payment_complete', 'handle_subscription_renewal' );
+
+}
+
+// Initialize the plugin
+new Custom_Stripe_Integration();
+

@@ -1,1 +1,39 @@
 
+# WordPress Custom Plugins
+
+This repository contains custom WordPress plugins developed by Anil Kumar. Each plugin is organized in its own folder for easy management and future updates.
+
+---
+
+## kb_stripe-custom-plugin
+
+**Plugin Name:** Custom Stripe Integration Subscription v3.2  
+**Description:** Custom integration of Stripe with WooCommerce. Allows creating payment links with a specific amount that can be shared with clients. When a client clicks the link, they are redirected to Stripe’s payment gateway for easy payment.  
+**Version:** 3.2  
+**Author:** Anil Kumar  
+
+### Features
+
+- Admin can create custom payment links with specific amounts.
+- Clients can pay directly via Stripe without logging into WordPress.
+- Works with WooCommerce for seamless integration.
+- Easy to manage and extend for multiple payment campaigns.
+- Secure: Stripe API keys are **not included** in the repo for safety.
+
+### Installation
+
+1. Clone or download the plugin folder into your WordPress `wp-content/plugins` directory.  
+2. Activate the plugin from WordPress Admin → Plugins.  
+3. Configure Stripe API keys in the plugin settings (do **not** commit them to GitHub).  
+4. Create and share payment links with clients.  
+
+### Security Note
+
+- The `vendor/` folder and API keys are **excluded** from this repository.  
+- Always store your Stripe secret keys in a secure environment or use `.env` files.
+
+### Future Plugins
+
+This repository will be updated with additional custom WordPress plugins developed by the author. Each plugin will have its own folder and documentation.
+
+
